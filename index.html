@@ -138,6 +138,15 @@
       <div class="dim small" id="vol"></div>
     </div>
 
+    <div class="card" id="fcCard">
+      <div class="row"><span class="label">Final call — how this window ends</span><span class="label" id="fcConf"></span></div>
+      <div class="row" style="align-items:center">
+        <span class="big" id="fcCall" style="font-size:40px">–</span>
+        <span class="mid" id="fcPct">–</span>
+      </div>
+      <div class="dim small" id="fcWhy">Waiting for live data…</div>
+    </div>
+
     <div class="sides">
       <div class="card side" id="upcard">
         <h2 class="pos">UP ▲</h2>
@@ -178,6 +187,11 @@
       <h3>If you'd bought every flag</h3>
       <div class="stat" id="flagStats"></div>
       <p class="fine" id="flagNote"></p>
+    </div>
+    <div class="card">
+      <h3>How often the final call was right</h3>
+      <div class="stat" id="fcStats"></div>
+      <p class="fine" id="fcNote"></p>
     </div>
     <div class="card">
       <h3>Is the model calibrated?</h3>
@@ -339,6 +353,7 @@
     const upGo = side("up", e.upFair, e.upAsk, e.upNet);
     const downGo = side("down", e.downFair, e.downAsk, e.downNet);
     setVerdict(e, upGo, downGo);
+    renderFinal();
 
     const w = [];
     if (!us) w.push("Can't reach Polymarket US right now, so these are the global book's odds and an estimated price to beat. Flags are off until it reconnects.");
@@ -371,6 +386,7 @@
       secLeft: Math.round(s.secondsLeft), spot: s.spot, ptb: s.ptb, fairUp: s.fairUp,
       upBid: s.up && s.up.bid, upAsk: e.upAsk, downBid: s.down && s.down.bid, downAsk: e.downAsk,
       fee: feeRate, upNet: e.upNet, downNet: e.downNet,
+      callUp: (finalCall(s) || {}).p ?? null,
     });
     track(s);
     save();
@@ -396,6 +412,49 @@
   }
 
   // ---- RECORD tab ----
+  // ---- Final call: where this window ends ----
+  // Starts from the model's chance of Up, then nudges it by BTC's recent momentum
+  // (damped, since short-term momentum in BTC is weak and fades fast).
+  let hist = [];
+  function finalCall(s) {
+    if (!s || s.source !== "us" || s.fairUp == null || s.spot == null || !(s.sigmaSec > 0)) return null;
+    const now = s.now, left = Math.max(0, s.windowEnd - now);
+    const past = hist.filter((h) => h.slug === s.slug && now - h.t >= 20 && now - h.t <= 60)
+      .sort((a, b) => Math.abs(now - a.t - 30) - Math.abs(now - b.t - 30))[0];
+    let p = s.fairUp, vel = null;
+    if (past && left > 5) {
+      vel = (s.spot - past.spot) / (now - past.t);                 // $ per second
+      const shift = 0.3 * vel * Math.min(left, 120);                // assume a little of it carries on
+      const adj = fairUpCalc(s.spot + shift, s.ptb, s.sigmaSec, left, null);
+      if (adj != null) p = adj;
+    }
+    return { p, base: s.fairUp, vel, left, perMin: s.spot * s.sigmaSec * Math.sqrt(60) };
+  }
+  function renderFinal() {
+    const c = finalCall(snap);
+    if (!c) {
+      $("fcCall").textContent = "–"; $("fcCall").className = "big"; $("fcPct").textContent = "";
+      $("fcConf").textContent = "";
+      $("fcWhy").textContent = snap && snap.source === "us" ? "Waiting for the price to beat…" : "Needs a Polymarket US connection.";
+      return;
+    }
+    const up = c.p >= 0.5, conf = Math.abs(c.p - 0.5);
+    $("fcCall").textContent = up ? "ENDS UP ▲" : "ENDS DOWN ▼";
+    $("fcCall").className = "big " + (up ? "pos" : "neg");
+    const sideP = up ? c.p : 1 - c.p;
+    $("fcPct").textContent = (sideP >= 0.99 ? "99%+" : pct(sideP)) + " likely";
+    $("fcConf").textContent = conf >= 0.35 ? "strong" : conf >= 0.15 ? "lean" : "coin flip";
+    const why = [];
+    const gap = snap.spot - snap.ptb;
+    const minsLeft = Math.max(1, Math.round(c.left / 60));
+    why.push(`BTC is ${usd(Math.abs(gap))} ${gap >= 0 ? "above" : "below"} the line with ~${minsLeft} min left, and typically moves ±${usd(c.perMin)} a minute.`);
+    if (c.vel != null && Math.abs(c.vel * 60) > 0.3 * c.perMin) {
+      why.push(`It's ${c.vel > 0 ? "climbing" : "falling"} ${usd(Math.abs(c.vel * 60))}/min, which moves the call from ${pct(c.base)} to ${pct(c.p)} Up.`);
+    }
+    if (conf < 0.15) why.push("Too close to call with confidence.");
+    $("fcWhy").textContent = why.join(" ");
+  }
+
   function renderRecord() {
     const ticks = log.filter((r) => r.type === "tick" && results[r.slug] && r.src === "us" && r.fairUp != null);
     const winsUp = (r) => results[r.slug] === "Up";
@@ -442,6 +501,29 @@
       ? `Accuracy score (lower is better): model ${(bModel / nB).toFixed(4)} vs market ${(bMkt / nB).toFixed(4)}. ` +
         (bModel < bMkt ? "The model is beating the market's own odds so far." : "The market's odds are more accurate than the model so far.")
       : "No finished windows yet. Results appear here as windows you watched settle.";
+    // Final-call accuracy: was the call on the right side of 50%? Compared with the market's own lean.
+    const scored = ticks.filter((r) => (r.callUp ?? r.fairUp) != null);
+    const score = (rows, pick) => {
+      const r = rows.filter((x) => pick(x) != null && Math.abs(pick(x) - 0.5) > 0.001);
+      return { n: r.length, right: r.filter((x) => (pick(x) > 0.5) === winsUp(x)).length };
+    };
+    const callOf = (r) => r.callUp ?? r.fairUp;
+    const mktOf = (r) => (r.upBid != null && r.upAsk != null ? (r.upBid + r.upAsk) / 2 : null);
+    const early = scored.filter((r) => r.secLeft >= 300);
+    const all = score(scored, callOf), mkt = score(scored, mktOf), ear = score(early, callOf);
+    const rate = (s) => (s.n ? Math.round((s.right / s.n) * 100) + "%" : "–");
+    $("fcStats").innerHTML = `
+      <div><b>${rate(all)}</b><span>calls right (${all.n})</span></div>
+      <div><b>${rate(ear)}</b><span>with 5+ min left</span></div>
+      <div><b>${rate(mkt)}</b><span>market's lean</span></div>`;
+    $("fcNote").textContent = !all.n
+      ? "Scores fill in as windows you watched settle."
+      : all.n < 300
+        ? `Only ${all.n} calls so far. Calls late in a window are easy, so the "5+ min left" number is the real test. Beating the market's lean is what would mean an edge.`
+        : (all.right / all.n > mkt.right / Math.max(1, mkt.n)
+          ? "The final call is beating the market's lean so far."
+          : "The market's lean has been as good or better so far, so the call isn't adding an edge yet.");
+
     const nTicks = log.filter((r) => r.type === "tick").length;
     $("logInfo").textContent = `${nTicks} readings across ${new Set(log.filter((r) => r.type === "tick").map((r) => r.slug)).size} windows, ${Object.keys(results).length} with results. Saved on this phone only.`;
   }
@@ -502,7 +584,7 @@
 
   // ---- export / clear ----
   $("dl").addEventListener("click", () => {
-    const cols = ["type", "ts", "src", "slug", "window", "secLeft", "spot", "ptb", "fairUp", "upBid", "upAsk", "downBid", "downAsk", "fee", "upNet", "downNet", "outcome"];
+    const cols = ["type", "ts", "src", "slug", "window", "secLeft", "spot", "ptb", "fairUp", "upBid", "upAsk", "downBid", "downAsk", "fee", "upNet", "downNet", "callUp", "outcome"];
     const csv = [cols.join(",")].concat(log.map((r) => cols.map((c) => r[c] ?? "").join(","))).join("\n");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
@@ -649,6 +731,10 @@
     try {
       snap = await getSnapshot(); gotAt = Date.now();
       $("status").textContent = "live · " + new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit" });
+      if (snap.windowStart && snap.source === "us" && !snap.stale && snap.spot != null) {
+        hist.push({ t: snap.now, slug: snap.slug, spot: snap.spot });
+        hist = hist.filter((h) => snap.now - h.t < 180);
+      }
       if (snap.windowStart) record(snap);
     } catch {
       $("status").textContent = "offline, retrying…";
