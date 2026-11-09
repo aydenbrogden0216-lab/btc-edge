@@ -784,18 +784,31 @@
   }
 
   let lastResultCheck = 0;
-  async function getSnapshot() {
-    const server = () => fetch("/api/snapshot", { cache: "no-store" }).then((r) => r.json());
+  let lastGood = null;   // last snapshot that had real Polymarket US odds
+  const hasOdds = (s) => s && s.source === "us" && s.up && s.up.ask != null && s.spot != null;
+  async function fetchSnapshot() {
+    const server = () => fetch("/api/snapshot", { cache: "no-store" }).then((r) => r.json()).catch(() => null);
     const phone = () => phoneSnapshot().then((s) => { ph.err = ""; return s; }, (e) => { ph.err = String(e.message || e); return null; });
     if (ph.prefer) {
-      const s = await phone();
-      if (s) return s;
+      const p = await phone();
+      if (hasOdds(p)) return p;
     }
     const s = await server();
-    if (s && s.source === "us" && !s.stale) { if (ph.prefer) { ph.prefer = false; store.set("preferPhone", false); } return s; }
+    if (hasOdds(s) && !s.stale) { if (ph.prefer) { ph.prefer = false; store.set("preferPhone", false); } return s; }
+    // Server came back without odds (usually Polymarket US briefly rate-limiting it): try the phone.
     const p = ph.prefer ? null : await phone();
-    if (p) { ph.prefer = true; store.set("preferPhone", true); return p; }
+    if (hasOdds(p)) { ph.prefer = true; store.set("preferPhone", true); return p; }
     if (s) s.errors = [...(s.errors || []), ...(ph.err ? [`from phone: ${ph.err}`] : [])];
+    return s;
+  }
+  async function getSnapshot() {
+    const s = await fetchSnapshot();
+    const now = Date.now() / 1000;
+    if (hasOdds(s) && !s.stale) { lastGood = s; return s; }
+    // Brief hiccup: keep showing the last good odds for up to 40 seconds (marked as delayed) instead of going blank.
+    if (lastGood && now - lastGood.now < 40 && lastGood.windowEnd > now && (!s || !s.slug || s.slug === lastGood.slug)) {
+      return { ...lastGood, now, secondsLeft: Math.max(0, lastGood.windowEnd - now), stale: true, errors: [] };
+    }
     return s;
   }
 

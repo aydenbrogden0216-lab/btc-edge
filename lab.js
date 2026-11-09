@@ -67,7 +67,7 @@
       data = { start, closes };
       store.set(DATA_KEY, data);
       onProgress && onProgress(Math.min(1, done / chunks));
-      if (from < now - 60) await sleep(1300);
+      if (from < now - 60) await sleep(4000);   // go easy so live odds keep getting through
     }
     data = { start, closes };
     store.set(DATA_KEY, data);
