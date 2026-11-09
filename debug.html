@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BTC Edge Diagnostics</title>
+<style>
+  body { margin: 0; padding: 16px; background: #0d1117; color: #e6edf3; font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  button { font: inherit; font-weight: 600; color: #fff; background: #238636; border: 0; border-radius: 10px; padding: 12px 16px; width: 100%; margin: 8px 0; }
+  pre { white-space: pre-wrap; word-break: break-all; background: #161b22; border: 1px solid #262d36; border-radius: 10px; padding: 10px; font-size: 11px; max-height: 60vh; overflow: auto; }
+  p { color: #8b949e; }
+</style>
+</head>
+<body>
+  <h2 style="margin-top:0">Diagnostics</h2>
+  <p id="msg">Running checks…</p>
+  <button id="copy" disabled>Copy results</button>
+  <pre id="out"></pre>
+<script>
+(async () => {
+  const out = { server: null, phone: [] };
+  try { out.server = await fetch("/api/debug", { cache: "no-store" }).then((r) => r.json()); }
+  catch (e) { out.server = { error: String(e) }; }
+
+  // Same calls straight from this phone, to see if Polymarket US blocks the server but not you.
+  const now = Math.floor(Date.now() / 1000);
+  const urls = [
+    "https://gateway.polymarket.us/v1/health",
+    "https://gateway.polymarket.us/v1/markets?categories=crypto&closed=false&limit=5",
+    `https://gateway.polymarket.us/v1/asset-prices/history?assets=crypto:btc&from=${now - 20}&to=${now}&bucket=ASSET_PRICE_BUCKET_1S`,
+  ];
+  for (const u of urls) {
+    try {
+      const r = await fetch(u, { cache: "no-store" });
+      const t = await r.text();
+      out.phone.push({ url: u, status: r.status, body: t.slice(0, 200) });
+    } catch (e) {
+      out.phone.push({ url: u, error: String(e) });
+    }
+  }
+
+  const text = JSON.stringify(out, null, 1);
+  document.getElementById("out").textContent = text;
+  document.getElementById("msg").textContent = "Done. Tap Copy and paste the results into the chat.";
+  const btn = document.getElementById("copy");
+  btn.disabled = false;
+  btn.onclick = async () => {
+    try { await navigator.clipboard.writeText(text); btn.textContent = "Copied ✓"; }
+    catch { btn.textContent = "Copy failed: long-press the text instead"; }
+  };
+})();
+</script>
+</body>
+</html>
