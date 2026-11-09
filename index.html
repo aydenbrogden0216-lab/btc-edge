@@ -136,6 +136,7 @@
         <span class="mid" id="fcPct">–</span>
       </div>
       <div class="dim small" id="fcWhy">Waiting for live data…</div>
+      <div class="small" id="fcSimilar" style="margin-top:8px"></div>
     </div>
 
     <div class="sides">
@@ -199,6 +200,26 @@
     </div>
   </section>
 
+  <!-- LAB -->
+  <section class="tab" id="tab-lab">
+    <div class="card">
+      <h3>Past windows</h3>
+      <p class="fine" style="margin-top:0" id="labStatus">Not loaded yet.</p>
+      <div class="bar" style="margin:12px 0"><div id="labBar" style="width:0%"></div></div>
+      <button class="primary" id="labGo" style="width:100%">Load 30 days of history</button>
+      <p class="fine">Pulls the BTC index Polymarket US settles on and rebuilds every 15-minute window from it. Takes about 30 seconds the first time, then updates on its own.</p>
+    </div>
+    <div class="card">
+      <h3>Model tuning</h3>
+      <div id="labTune" class="small dim">Runs after history loads.</div>
+    </div>
+    <div class="card">
+      <h3>Patterns tested</h3>
+      <div id="labPatterns" class="small dim">Runs after history loads.</div>
+      <p class="fine">Each pattern is found on the older two-thirds of the history, then checked on the newest third, which it never saw. Only patterns that hold up on both count as confirmed. Most should read "noise": BTC rarely has easy patterns, and the test is built to avoid fooling you.</p>
+    </div>
+  </section>
+
   <!-- BETS -->
   <section class="tab" id="tab-bets">
     <div class="card">
@@ -224,9 +245,11 @@
 <nav>
   <button class="on" data-tab="live">Live</button>
   <button data-tab="record">Record</button>
+  <button data-tab="lab">Lab</button>
   <button data-tab="bets">Bets</button>
 </nav>
 
+<script src="lab.js"></script>
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
@@ -271,7 +294,7 @@
   const secondsLeft = () => snap && snap.windowEnd ? Math.max(0, snap.windowEnd - (snap.now + (Date.now() - gotAt) / 1000)) : null;
 
   function edges(s) {
-    const f = s && s.fairUp;
+    const f = s && s.fairUp != null && typeof window.Lab !== "undefined" && s.source === "us" ? Lab.tuned(s.fairUp, null, false) : s && s.fairUp;
     const ua = s && s.up && s.up.ask, da = s && s.down && s.down.ask;
     return {
       upFair: f, downFair: f == null ? null : 1 - f,
@@ -404,28 +427,34 @@
 
   // ---- RECORD tab ----
   // ---- Final call: where this window ends ----
-  // Starts from the model's chance of Up, then nudges it by BTC's recent momentum
-  // (damped, since short-term momentum in BTC is weak and fades fast).
+  // Starts from the model, then applies whatever the Lab confirmed on a month of past windows
+  // (calibration, and momentum if it actually helped on unseen data).
   let hist = [];
-  function finalCall(s) {
-    if (!s || s.source !== "us" || s.fairUp == null || s.spot == null || !(s.sigmaSec > 0)) return null;
+  const hasLab = () => typeof window.Lab !== "undefined";
+  function liveFeatures(s) {
     const now = s.now, left = Math.max(0, s.windowEnd - now);
-    const past = hist.filter((h) => h.slug === s.slug && now - h.t >= 20 && now - h.t <= 60)
-      .sort((a, b) => Math.abs(now - a.t - 30) - Math.abs(now - b.t - 30))[0];
-    let p = s.fairUp, vel = null;
-    if (past && left > 5) {
-      vel = (s.spot - past.spot) / (now - past.t);                 // $ per second
-      const shift = 0.3 * vel * Math.min(left, 120);                // assume a little of it carries on
-      const adj = fairUpCalc(s.spot + shift, s.ptb, s.sigmaSec, left, null);
-      if (adj != null) p = adj;
-    }
-    return { p, base: s.fairUp, vel, left, perMin: s.spot * s.sigmaSec * Math.sqrt(60) };
+    const perMin = s.spot * s.sigmaSec * Math.sqrt(60);
+    const k = Math.floor((now - s.windowStart) / 60);
+    const z = (s.spot - s.ptb) / (perMin * Math.sqrt(Math.max(0.25, left / 60 - 1 + 0.25)));
+    const past = hist.filter((h) => h.slug === s.slug && now - h.t >= 100 && now - h.t <= 140)
+      .sort((a, b) => Math.abs(now - a.t - 120) - Math.abs(now - b.t - 120))[0];
+    const mz = past ? (s.spot - past.spot) / (perMin * Math.SQRT2) : null;
+    const move2 = past ? s.spot - past.spot : null;
+    return { left, perMin, k, z, mz, move2 };
+  }
+  function finalCall(s) {
+    if (!s || s.source !== "us" || s.fairUp == null || s.spot == null || s.ptb == null || !(s.sigmaSec > 0)) return null;
+    const f = liveFeatures(s);
+    const base = hasLab() ? Lab.tuned(s.fairUp, null, false) : s.fairUp;
+    const p = hasLab() ? Lab.tuned(s.fairUp, f.mz, true) : s.fairUp;
+    const sim = hasLab() && f.k >= 0 && f.k <= 13 ? Lab.similar(f.k, f.z, f.mz) : null;
+    return { p, base, sim, ...f };
   }
   function renderFinal() {
     const c = finalCall(snap);
     if (!c) {
       $("fcCall").textContent = "–"; $("fcCall").className = "big"; $("fcPct").textContent = "";
-      $("fcConf").textContent = "";
+      $("fcConf").textContent = ""; $("fcSimilar").textContent = "";
       $("fcWhy").textContent = snap && snap.source === "us" ? "Waiting for the price to beat…" : "Needs a Polymarket US connection.";
       return;
     }
@@ -437,13 +466,15 @@
     $("fcConf").textContent = conf >= 0.35 ? "strong" : conf >= 0.15 ? "lean" : "coin flip";
     const why = [];
     const gap = snap.spot - snap.ptb;
-    const minsLeft = Math.max(1, Math.round(c.left / 60));
-    why.push(`BTC is ${usd(Math.abs(gap))} ${gap >= 0 ? "above" : "below"} the line with ~${minsLeft} min left, and typically moves ±${usd(c.perMin)} a minute.`);
-    if (c.vel != null && Math.abs(c.vel * 60) > 0.3 * c.perMin) {
-      why.push(`It's ${c.vel > 0 ? "climbing" : "falling"} ${usd(Math.abs(c.vel * 60))}/min, which moves the call from ${pct(c.base)} to ${pct(c.p)} Up.`);
+    why.push(`BTC is ${usd(Math.abs(gap))} ${gap >= 0 ? "above" : "below"} the line with ~${Math.max(1, Math.round(c.left / 60))} min left; it typically moves ±${usd(c.perMin)} a minute.`);
+    if (c.move2 != null && Math.abs(c.p - c.base) >= 0.01) {
+      why.push(`Its ${c.move2 >= 0 ? "climb" : "drop"} of ${usd(Math.abs(c.move2))} in 2 min shifts the call from ${pct(c.base)} to ${pct(c.p)}, based on how past windows played out.`);
     }
     if (conf < 0.15) why.push("Too close to call with confidence.");
     $("fcWhy").textContent = why.join(" ");
+    $("fcSimilar").innerHTML = c.sim
+      ? `Past windows like this one: <b class="${c.sim.up >= 0.5 ? "pos" : "neg"}">${Math.round(c.sim.up * 100)}% ended Up</b> <span class="dim">(${c.sim.n.toLocaleString()} cases)</span>`
+      : (hasLab() && Lab.hasData() ? '<span class="dim">No close matches in past windows: this is an unusual spot.</span>' : "Load history in the Lab tab to compare with past windows.");
   }
 
   function renderRecord() {
@@ -593,10 +624,60 @@
     document.querySelectorAll(".tab").forEach((x) => x.classList.toggle("on", x.id === "tab-" + tab));
     renderAll();
   }));
+  // ---- LAB tab ----
+  let labBusy = false, labProgress = 0, labErr = "";
+  function renderLab() {
+    if (!hasLab()) { $("labStatus").textContent = "Lab didn't load. Refresh the page."; return; }
+    const r = Lab.result();
+    $("labBar").style.width = Math.round((labBusy ? labProgress : (Lab.hasData() ? 1 : 0)) * 100) + "%";
+    $("labGo").disabled = labBusy;
+    $("labGo").textContent = labBusy ? "Loading…" : Lab.hasData() ? "Update now" : "Load 30 days of history";
+    $("labStatus").textContent = labErr ? labErr
+      : labBusy ? `Loading history… ${Math.round(labProgress * 100)}%`
+      : r ? `${r.windows.toLocaleString()} past windows from the last ${r.days} days. Updated ${new Date(r.at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}.`
+      : "Not loaded yet.";
+    if (!r) return;
+    const pctTxt = (x) => (x * 100).toFixed(1) + "%";
+    const used = r.applyCB ? "calibration + momentum" : r.applyC ? "calibration" : null;
+    const best = r.applyCB ? r.tunedCB : r.applyC ? r.tunedC : r.base;
+    const conf = r.applyCB ? r.tunedCB.c : r.applyC ? r.tunedC.c : 1;
+    $("labTune").innerHTML = `
+      <div class="stat" style="margin-bottom:10px">
+        <div><b>${pctTxt(best.hit)}</b><span>calls on the right side</span></div>
+        <div><b class="${best.ll < r.base.ll ? "pos" : ""}">${best.ll < r.base.ll ? "+" + (((r.base.ll - best.ll) / r.base.ll) * 100).toFixed(1) + "%" : "0%"}</b><span>more accurate odds after tuning</span></div>
+        <div><b>${r.testN.toLocaleString()}</b><span>unseen windows</span></div>
+      </div>
+      <div>${used
+        ? `<b style="color:var(--text)">Applied: ${used}.</b> ${conf < 1 ? "The original model was too confident, so it's been toned down." : conf > 1 ? "The original model was too cautious, so it's been sharpened." : ""}${r.applyCB ? (r.tunedCB.b > 0 ? " Recent moves tended to keep going, so momentum now leans the final call." : " Recent moves tended to reverse, so momentum now leans the final call the other way.") : ""} This now feeds the fair odds, edges, and final call.`
+        : '<b style="color:var(--text)">No change applied.</b> Tuning didn\'t beat the original model on unseen windows, so the model stays as is.'}</div>
+      <p class="fine">Scored on the newest third of history, which the tuning never saw. "Right side" counts every minute of every window, so it includes easy late calls. Tuning doesn't flip calls; it makes the percentages more honest, which is what the edge math depends on.</p>`;
+    $("labPatterns").innerHTML = r.patterns.map((x) => {
+      const tag = x.verdict === "confirmed" ? '<span class="badge go" style="margin:0">confirmed</span>'
+        : x.verdict === "noise" ? '<span class="badge" style="margin:0">noise</span>' : '<span class="badge" style="margin:0">needs data</span>';
+      const size = Math.abs(x.size * 100).toFixed(1);
+      const what = x.kind === "side" ? `${size}% ${x.size >= 0 ? "more" : "less"} often than expected` : `Up wins ${size}% ${x.size >= 0 ? "more" : "less"} than expected`;
+      return `<div class="bet"><div><span style="color:var(--text)">${x.name}</span><div class="dim small">${what} · ${x.test.n} unseen windows</div></div>${tag}</div>`;
+    }).join("");
+  }
+  async function labUpdate() {
+    if (!hasLab() || labBusy) return;
+    labBusy = true; labErr = ""; labProgress = 0; renderLab();
+    try {
+      await Lab.update((p) => { labProgress = p; if (tab === "lab") renderLab(); });
+      await new Promise((r) => setTimeout(r, 30));
+      if (!Lab.run()) labErr = "Not enough history yet to test reliably.";
+    } catch (e) { labErr = String(e.message || e); }
+    labBusy = false; renderAll();
+  }
+  $("labGo").addEventListener("click", labUpdate);
+  // Refresh history in the background when it's more than 6 hours old (or never loaded).
+  setTimeout(() => { if (hasLab() && Lab.dataAge() > 6 * 3600) labUpdate(); }, 6000);
+
   function renderAll() {
     renderLive();
     if (tab === "record") renderRecord();
     if (tab === "bets") renderBets();
+    if (tab === "lab") renderLab();
   }
 
   // ---- Polymarket US straight from the phone (used when the server can't reach it) ----
