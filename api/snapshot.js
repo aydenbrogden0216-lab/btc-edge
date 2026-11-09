@@ -128,27 +128,61 @@ function usInfo(m) {
     checkedAt: Date.now(),
   };
 }
-async function findUsMarket(nowSec) {
+// Polymarket US names each window like "btc-updown-15m-2026-09-21-0015z" (start time, UTC).
+export function slugStamp(ws) {
+  const d = new Date(ws * 1000), p = (n) => String(n).padStart(2, "0");
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}-${p(d.getUTCHours())}${p(d.getUTCMinutes())}z`;
+}
+export function slugGuesses(ws) {
+  const s = slugStamp(ws);
+  return [`btc-updown-15m-${s}`, `cpc-btc-updown-15m-${s}`, `aec-btc-updown-15m-${s}`];
+}
+
+async function findUsMarket(nowSec, tried = []) {
   const ws = Math.floor(nowSec / WINDOW) * WINDOW;
   if (cache.markets.has(ws)) return cache.markets.get(ws);
-  const pick = (list) =>
-    list.filter(isBtc15).map(usInfo).find((i) => i.windowStart <= nowSec && nowSec < i.windowEnd);
+  const current = (i) => i && i.windowStart <= nowSec && nowSec < i.windowEnd;
+  const fromMarket = (m) => (isBtc15(m) ? usInfo(m) : null);
+  let found = null;
 
-  const narrow = new URLSearchParams({
-    categories: "crypto", closed: "false", limit: "200",
-    startDateMin: new Date((ws - 3600) * 1000).toISOString(),
-    startDateMax: new Date((ws + 600) * 1000).toISOString(),
-  });
-  let found = pick((await getJSON(`${US}/v1/markets?${narrow}`)).markets || []);
-  if (!found) {
-    const wide = new URLSearchParams({ categories: "crypto", closed: "false", limit: "500" });
-    found = pick((await getJSON(`${US}/v1/markets?${wide}`)).markets || []);
+  // 1) Direct lookup by the window's name: one quick call, no listing needed.
+  for (const slug of slugGuesses(ws)) {
+    const r = await settle(getJSON(`${US}/v1/market/slug/${encodeURIComponent(slug)}`));
+    tried.push(`${slug}: ${r.ok ? (r.value && r.value.market ? "found" : "empty") : r.error}`);
+    const info = r.ok && r.value && r.value.market ? fromMarket(r.value.market) : null;
+    if (current(info)) { found = info; break; }
   }
+
+  // 2) Listings and search, each tried on its own so one failure doesn't stop the rest.
+  const stamp = slugStamp(ws);
+  const lookups = [
+    ["crypto list", `${US}/v1/markets?${new URLSearchParams({ categories: "crypto", closed: "false", limit: "500" })}`],
+    ["open list", `${US}/v1/markets?${new URLSearchParams({ closed: "false", limit: "500" })}`],
+    ["search", `${US}/v1/search?${new URLSearchParams({ query: `btc-updown-15m-${stamp}` })}`],
+  ];
+  for (const [name, url] of found ? [] : lookups) {
+    const r = await settle(getJSON(url));
+    if (!r.ok) { tried.push(`${name}: ${r.error}`); continue; }
+    const list = r.value.markets || (r.value.events || []).flatMap((e) => e.markets || []);
+    tried.push(`${name}: ${list.length} markets`);
+    found = list.map(fromMarket).find(current) || null;
+    if (!found) {
+      // Some listings leave out the price terms; match the name, then fetch the full market.
+      const named = list.find((m) => m.slug && m.slug.includes("btc-updown-15m") && m.slug.includes(stamp));
+      if (named) {
+        const full = await settle(getJSON(`${US}/v1/market/slug/${encodeURIComponent(named.slug)}`));
+        const info = full.ok && full.value && full.value.market ? fromMarket(full.value.market) : null;
+        if (current(info)) found = info;
+      }
+    }
+    if (found) break;
+  }
+
   if (found) {
     cache.markets.set(ws, found);
     for (const k of cache.markets.keys()) if (k < ws - 7200) cache.markets.delete(k);
   }
-  return found || null;
+  return found;
 }
 async function refreshUs(info) {
   const d = await getJSON(`${US}/v1/market/slug/${encodeURIComponent(info.slug)}`);
@@ -191,8 +225,9 @@ async function brtiVolCandles(nowSec) {
 }
 
 async function usSnapshot(now) {
-  const info = await findUsMarket(now);
-  if (!info) return null;
+  const tried = [];
+  const info = await findUsMarket(now, tried);
+  if (!info) throw new Error(`market not found (${tried.join("; ")})`);
   const errors = [];
 
   const needPtb = info.ptb == null && now > info.windowStart + 3 && Date.now() - info.checkedAt > 4000;

@@ -244,7 +244,7 @@
     const e = $(prefix + "Edge");
     e.textContent = signedC(net);
     e.className = "num " + (net == null ? "" : net >= 0 ? "pos" : "neg");
-    const go = net != null && net * 100 >= minEdge && !(snap && snap.stale);
+    const go = net != null && net * 100 >= minEdge && snap && snap.source === "us" && !snap.stale;
     const b = $(prefix + "Badge");
     b.textContent = go ? "Worth a look" : net == null ? "–" : "No edge";
     b.className = "badge" + (go ? " go" : "");
@@ -280,7 +280,7 @@
     side("down", e.downFair, e.downAsk, e.downNet);
 
     const w = [];
-    if (!us) w.push("Couldn't reach the Polymarket US market, so this is the global book and an estimated price to beat. Don't bet off these numbers.");
+    if (!us) w.push("Can't reach Polymarket US right now, so these are the global book's odds and an estimated price to beat. Flags are off until it reconnects.");
     if (snap.stale) w.push("Showing data from a few seconds ago (the US API asked us to slow down).");
     const spread = snap.up && snap.up.ask != null && snap.up.bid != null ? snap.up.ask - snap.up.bid : null;
     if (spread != null && spread > 0.04) w.push(`Wide spread (${cents(spread)}): thin market, prices may move when you trade.`);
@@ -465,11 +465,128 @@
     if (tab === "bets") renderBets();
   }
 
+  // ---- Polymarket US straight from the phone (used when the server can't reach it) ----
+  const US = "https://gateway.polymarket.us", WIN = 900, AVG = 60;
+  const ph = { markets: {}, vol: null, volAt: 0, prefer: store.get("preferPhone", false), err: "" };
+  const n = (x) => x == null || x === "" || !Number.isFinite(Number(x)) ? null : Number(x);
+  const amt = (a) => a && typeof a === "object" ? n(a.value) : n(a);
+  const toSec = (d) => {
+    if (d == null || d === "") return null;
+    if (/^\d+(\.\d+)?$/.test(String(d))) { const x = Number(d); return x > 1e12 ? x / 1000 : x; }
+    const t = Date.parse(d); return Number.isFinite(t) ? t / 1000 : null;
+  };
+  const getJ = async (url) => {
+    const r = await fetch(url, { cache: "no-store" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  };
+  const stampOf = (ws) => {
+    const d = new Date(ws * 1000), p = (x) => String(x).padStart(2, "0");
+    return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}-${p(d.getUTCHours())}${p(d.getUTCMinutes())}z`;
+  };
+  const termsInfo = (m) => {
+    const t = m && m.assetPriceTerms;
+    if (!t || !/UP_DOWN/.test(t.marketType || "")) return null;
+    if (String((t.asset && t.asset.symbol) || "").toLowerCase() !== "btc") return null;
+    const a = toSec(t.windowStart), b = toSec(t.windowEnd);
+    if (a == null || b == null || Math.abs(b - a - WIN) > 2) return null;
+    return { slug: m.slug, windowStart: a, windowEnd: b, ptb: amt(t.priceToBeat), checkedAt: Date.now() };
+  };
+  function tcdf4(z) { const t = z * Math.SQRT2, u = 1 + t * t / 4; return 0.5 + 0.375 * (t / Math.sqrt(u)) * (1 - t * t / (12 * u)); }
+  function volPerSec(c1m, c1s) {
+    const rets = (xs) => { const r = []; for (let i = 1; i < xs.length; i++) if (xs[i] > 0 && xs[i - 1] > 0) r.push(Math.log(xs[i] / xs[i - 1])); return r; };
+    const rm = rets(c1m); if (rm.length < 10) return null;
+    const seed = rm.slice(0, 20); let v = seed.reduce((a, x) => a + x * x, 0) / seed.length;
+    for (const r of rm) v = 0.94 * v + 0.06 * r * r;
+    const longS = Math.max(Math.sqrt(v), 0.00005) / Math.sqrt(60);
+    const rs = rets(c1s); if (rs.length < 30) return longS;
+    const shortS = Math.sqrt(rs.reduce((a, x) => a + x * x, 0) / rs.length);
+    return Math.sqrt(0.7 * longS ** 2 + 0.3 * shortS ** 2);
+  }
+  function fairUpCalc(spot, ptb, sig, left, known) {
+    if (!(spot > 0 && ptb > 0)) return null;
+    if (left <= 0) return (known ?? spot) >= ptb ? 1 : 0;
+    let mean, vf;
+    if (left > AVG) { mean = spot; vf = left - AVG + AVG / 3; }
+    else { const A = known ?? spot; mean = ((AVG - left) * A + left * spot) / AVG; vf = (left / AVG) ** 2 * (left / 3); }
+    if (!(sig > 0)) return null;
+    const sd = spot * sig * Math.sqrt(vf);
+    if (!(sd > 0)) return mean >= ptb ? 1 : 0;
+    return Math.min(0.999, Math.max(0.001, tcdf4((mean - ptb) / sd)));
+  }
+  async function phoneMarket(now) {
+    const ws = Math.floor(now / WIN) * WIN;
+    if (ph.markets[ws]) return ph.markets[ws];
+    const stamp = stampOf(ws), errs = [];
+    for (const slug of [`btc-updown-15m-${stamp}`, `cpc-btc-updown-15m-${stamp}`, `aec-btc-updown-15m-${stamp}`]) {
+      try {
+        const d = await getJ(`${US}/v1/market/slug/${encodeURIComponent(slug)}`);
+        const info = termsInfo(d && d.market);
+        if (info && info.windowStart <= now && now < info.windowEnd) { ph.markets = { [ws]: info }; return info; }
+      } catch (e) { errs.push(e.message); }
+    }
+    try {
+      const d = await getJ(`${US}/v1/markets?categories=crypto&closed=false&limit=500`);
+      for (const m of d.markets || []) {
+        let info = termsInfo(m);
+        if (!info && m.slug && m.slug.includes("btc-updown-15m") && m.slug.includes(stamp)) {
+          info = termsInfo((await getJ(`${US}/v1/market/slug/${encodeURIComponent(m.slug)}`)).market);
+        }
+        if (info && info.windowStart <= now && now < info.windowEnd) { ph.markets = { [ws]: info }; return info; }
+      }
+    } catch (e) { errs.push(e.message); }
+    throw new Error("market not found" + (errs.length ? ` (${[...new Set(errs)].join(", ")})` : ""));
+  }
+  async function phoneSnapshot() {
+    const now = Date.now() / 1000;
+    const info = await phoneMarket(now);
+    if (info.ptb == null && now > info.windowStart + 3 && Date.now() - info.checkedAt > 4000) {
+      info.checkedAt = Date.now();
+      try { const fresh = termsInfo((await getJ(`${US}/v1/market/slug/${encodeURIComponent(info.slug)}`)).market); if (fresh) info.ptb = fresh.ptb; } catch {}
+    }
+    const hist = (from, to, bucket) => getJ(`${US}/v1/asset-prices/history?assets=crypto:btc&from=${Math.floor(from)}&to=${Math.floor(to)}&bucket=${bucket}`)
+      .then((d) => (((d.series || [])[0] || {}).candles || []).map((c) => ({ t: toSec(c.timestamp), c: n(c.close) })).filter((c) => c.t != null && c.c > 0).sort((a, b) => a.t - b.t));
+    const [bbo, recent] = await Promise.all([getJ(`${US}/v1/markets/${encodeURIComponent(info.slug)}/bbo`), hist(now - 100, now, "ASSET_PRICE_BUCKET_1S")]);
+    if (!ph.vol || Date.now() - ph.volAt > 60000) {
+      try { ph.vol = (await hist(now - 7200, now, "ASSET_PRICE_BUCKET_1M")).map((x) => x.c); ph.volAt = Date.now(); } catch {}
+    }
+    const m = (bbo && bbo.marketData) || {};
+    const bid = amt(m.bestBid), ask = amt(m.bestAsk);
+    const spot = recent.length ? recent[recent.length - 1].c : null;
+    const left = Math.max(0, info.windowEnd - now);
+    const inside = recent.filter((x) => x.t >= info.windowEnd - AVG && x.t < info.windowEnd);
+    const known = inside.length ? inside.reduce((a, x) => a + x.c, 0) / inside.length : null;
+    const sig = ph.vol ? volPerSec(ph.vol, recent.map((x) => x.c)) : null;
+    if (spot == null || ask == null) throw new Error("incomplete data");
+    return {
+      source: "us", via: "phone", slug: info.slug, windowStart: info.windowStart, windowEnd: info.windowEnd,
+      now, secondsLeft: left, spot, spotSource: "BRTI", ptb: info.ptb, ptbSource: info.ptb != null ? "official" : null,
+      sigmaSec: sig, fairUp: info.ptb != null ? fairUpCalc(spot, info.ptb, sig, left, known) : null,
+      up: { bid, ask, bidSize: n(m.bidShares), askSize: n(m.askShares) },
+      down: { bid: ask == null ? null : +(1 - ask).toFixed(4), ask: bid == null ? null : +(1 - bid).toFixed(4) },
+      marketState: m.state || null, marketUrl: "https://polymarket.us", errors: [],
+    };
+  }
+
   let lastResultCheck = 0;
+  async function getSnapshot() {
+    const server = () => fetch("/api/snapshot", { cache: "no-store" }).then((r) => r.json());
+    const phone = () => phoneSnapshot().then((s) => { ph.err = ""; return s; }, (e) => { ph.err = String(e.message || e); return null; });
+    if (ph.prefer) {
+      const s = await phone();
+      if (s) return s;
+    }
+    const s = await server();
+    if (s && s.source === "us" && !s.stale) { if (ph.prefer) { ph.prefer = false; store.set("preferPhone", false); } return s; }
+    const p = ph.prefer ? null : await phone();
+    if (p) { ph.prefer = true; store.set("preferPhone", true); return p; }
+    if (s) s.errors = [...(s.errors || []), ...(ph.err ? [`from phone: ${ph.err}`] : [])];
+    return s;
+  }
+
   async function poll() {
     try {
-      const r = await fetch("/api/snapshot", { cache: "no-store" });
-      snap = await r.json(); gotAt = Date.now();
+      snap = await getSnapshot(); gotAt = Date.now();
       $("status").textContent = "live · " + new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit" });
       if (snap.windowStart) record(snap);
     } catch {
