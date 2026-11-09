@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0d1117">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>BTC Edge</title>
+<style>
+  :root {
+    --bg: #0d1117; --card: #161b22; --line: #262d36; --text: #e6edf3; --dim: #8b949e;
+    --up: #2ea043; --down: #f85149; --warn: #d29922; --chip: #21262d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: max(12px, env(safe-area-inset-top)) 16px 90px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 480px; margin: 0 auto; }
+  header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
+  h1 { font-size: 18px; margin: 0; }
+  h3 { font-size: 15px; margin: 0 0 8px; }
+  .win { color: var(--dim); font-size: 13px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin-bottom: 12px; }
+  .row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  .label { color: var(--dim); font-size: 12px; text-transform: uppercase; letter-spacing: .6px; }
+  .big { font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .mid { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .num { font-variant-numeric: tabular-nums; }
+  .pos { color: var(--up); } .neg { color: var(--down); } .dim { color: var(--dim); } .small { font-size: 12px; }
+  .bar { height: 10px; border-radius: 6px; background: var(--down); overflow: hidden; margin: 10px 0 6px; }
+  .bar > div { height: 100%; background: var(--up); width: 50%; transition: width .4s; }
+  .sides { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .side { border-width: 2px; }
+  .side.hot-up { border-color: var(--up); }
+  .side.hot-down { border-color: var(--down); }
+  .side h2 { margin: 0 0 8px; font-size: 16px; }
+  .kv { display: flex; justify-content: space-between; font-size: 14px; padding: 2px 0; }
+  .badge { display: inline-block; margin-top: 8px; padding: 3px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; background: var(--chip); color: var(--dim); }
+  .badge.go { background: rgba(46,160,67,.18); color: var(--up); }
+  .warn { color: var(--warn); font-size: 13px; margin: 0 0 12px; }
+  .src { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; background: var(--chip); color: var(--dim); }
+  .src.fallback { color: var(--warn); }
+  button, input, select, a.btn {
+    font: inherit; color: var(--text); background: var(--chip); border: 1px solid var(--line);
+    border-radius: 10px; padding: 8px 12px; text-decoration: none;
+  }
+  button.primary { background: #238636; border-color: #2ea043; font-weight: 600; }
+  input, select { min-width: 0; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field input, .field select { width: 100%; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 5px 4px; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--dim); font-weight: 500; }
+  .stat { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; text-align: center; }
+  .stat div b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+  .stat div span { color: var(--dim); font-size: 11px; }
+  .bet { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+  .bet:last-child { border-bottom: 0; }
+  .x { background: none; border: 0; color: var(--dim); padding: 4px 6px; }
+  nav {
+    position: fixed; left: 0; right: 0; bottom: 0; display: flex; justify-content: center; gap: 6px;
+    padding: 10px 16px max(10px, env(safe-area-inset-bottom)); background: rgba(13,17,23,.95);
+    border-top: 1px solid var(--line); backdrop-filter: blur(8px);
+  }
+  nav button { flex: 1; max-width: 150px; background: none; border: 0; color: var(--dim); font-weight: 600; }
+  nav button.on { color: var(--text); background: var(--chip); }
+  .tab { display: none; } .tab.on { display: block; }
+  .fine { color: var(--dim); font-size: 12px; margin-top: 4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>BTC 15m Edge</h1>
+    <span class="win" id="win">–</span>
+  </header>
+
+  <!-- LIVE -->
+  <section class="tab on" id="tab-live">
+    <div class="card">
+      <div class="row"><span class="label">Time left</span><span class="small dim" id="status">connecting…</span></div>
+      <div class="row"><span class="big" id="clock">–:––</span><span class="src" id="src">–</span></div>
+    </div>
+
+    <div class="card">
+      <div class="row"><span class="label" id="spotLabel">BTC now</span><span class="label">Price to beat</span></div>
+      <div class="row"><span class="mid" id="spot">–</span><span class="mid" id="ptb">–</span></div>
+      <div class="row" style="margin-top:4px">
+        <span id="gap" class="num">–</span><span class="dim small" id="ptbsrc"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row"><span class="label">Fair chance of Up</span><span class="label">Market</span></div>
+      <div class="row"><span class="big" id="fair">–</span><span class="mid" id="mkt">–</span></div>
+      <div class="bar"><div id="fairbar"></div></div>
+      <div class="dim small" id="vol"></div>
+    </div>
+
+    <div class="sides">
+      <div class="card side" id="upcard">
+        <h2 class="pos">Up</h2>
+        <div class="kv"><span class="dim">Buy at</span><span class="num" id="upAsk">–</span></div>
+        <div class="kv"><span class="dim">Fair</span><span class="num" id="upFair">–</span></div>
+        <div class="kv"><span class="dim">Fee</span><span class="num" id="upFee">–</span></div>
+        <div class="kv"><span class="dim">Edge</span><span class="num" id="upEdge">–</span></div>
+        <span class="badge" id="upBadge">–</span>
+      </div>
+      <div class="card side" id="downcard">
+        <h2 class="neg">Down</h2>
+        <div class="kv"><span class="dim">Buy at</span><span class="num" id="downAsk">–</span></div>
+        <div class="kv"><span class="dim">Fair</span><span class="num" id="downFair">–</span></div>
+        <div class="kv"><span class="dim">Fee</span><span class="num" id="downFee">–</span></div>
+        <div class="kv"><span class="dim">Edge</span><span class="num" id="downEdge">–</span></div>
+        <span class="badge" id="downBadge">–</span>
+      </div>
+    </div>
+    <p class="warn" id="warn"></p>
+
+    <div class="card">
+      <h3>Settings</h3>
+      <div class="grid2">
+        <label class="field"><span class="dim small">Flag when edge ≥ (¢)</span><input id="minEdge" type="number" min="1" max="30" step="1" inputmode="numeric"></label>
+        <label class="field"><span class="dim small">Fee rate (Θ)</span><input id="feeRate" type="number" min="0" max="0.2" step="0.0005" inputmode="decimal"></label>
+      </div>
+      <p class="fine">Edge = fair price − buy price − taker fee. Fee per share = Θ × price × (1 − price); Polymarket US's standard Θ is 0.0695. Change it if the app shows a different fee.</p>
+      <a class="btn" id="pmLink" href="https://polymarket.us" target="_blank" rel="noopener">Open Polymarket ↗</a>
+    </div>
+  </section>
+
+  <!-- RECORD -->
+  <section class="tab" id="tab-record">
+    <div class="card">
+      <h3>If you'd bought every flag</h3>
+      <div class="stat" id="flagStats"></div>
+      <p class="fine" id="flagNote"></p>
+    </div>
+    <div class="card">
+      <h3>Is the model calibrated?</h3>
+      <p class="fine" style="margin-top:0">When it said X%, how often did Up actually win?</p>
+      <table id="calib"></table>
+      <p class="fine" id="brier"></p>
+    </div>
+    <div class="card">
+      <h3>Saved data</h3>
+      <p class="fine" style="margin-top:0" id="logInfo"></p>
+      <div class="row" style="justify-content:flex-start; gap:8px">
+        <button id="dl">Download CSV</button><button id="clr">Clear log</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- BETS -->
+  <section class="tab" id="tab-bets">
+    <div class="card">
+      <h3>Log a bet</h3>
+      <div class="grid2">
+        <label class="field"><span class="dim small">Side</span>
+          <select id="betSide"><option>Up</option><option>Down</option></select></label>
+        <label class="field"><span class="dim small">Price paid (¢)</span><input id="betPrice" type="number" min="1" max="99" step="1" inputmode="numeric"></label>
+        <label class="field"><span class="dim small">Amount ($)</span><input id="betAmt" type="number" min="0.5" step="0.5" inputmode="decimal"></label>
+        <div class="field"><span class="dim small">&nbsp;</span><button class="primary" id="betAdd">Log bet</button></div>
+      </div>
+      <p class="fine" id="betCtx">Logs against the current window.</p>
+    </div>
+    <div class="card">
+      <h3>Your results</h3>
+      <div class="stat" id="betStats"></div>
+      <p class="fine" id="betSplit"></p>
+    </div>
+    <div class="card" id="betList"></div>
+  </section>
+</div>
+
+<nav>
+  <button class="on" data-tab="live">Live</button>
+  <button data-tab="record">Record</button>
+  <button data-tab="bets">Bets</button>
+</nav>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const POLL_MS = 5000, LOG_EVERY_MS = 15000, LOG_CAP = 25000;
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  };
+
+  // ---- settings ----
+  let minEdge = store.get("minEdge", 3);
+  let feeRate = store.get("feeRate", 0.0695);
+  $("minEdge").value = minEdge; $("feeRate").value = feeRate;
+  $("minEdge").addEventListener("change", (e) => {
+    minEdge = Math.min(30, Math.max(1, Number(e.target.value) || 3)); e.target.value = minEdge; store.set("minEdge", minEdge); renderAll();
+  });
+  $("feeRate").addEventListener("change", (e) => {
+    const v = Number(e.target.value); feeRate = Number.isFinite(v) ? Math.min(0.2, Math.max(0, v)) : 0.0695;
+    e.target.value = feeRate; store.set("feeRate", feeRate); renderAll();
+  });
+
+  // ---- state ----
+  let snap = null, gotAt = 0, lastLog = 0, timer = null, tab = "live";
+  let log = store.get("log", []);
+  let bets = store.get("bets", []);
+  let results = store.get("results", {});      // slug -> "Up" | "Down"
+  let pending = store.get("pending", {});      // slug -> {src, key, end}
+  const save = () => {
+    if (log.length > LOG_CAP) log = log.slice(-LOG_CAP);
+    store.set("log", log); store.set("bets", bets); store.set("results", results); store.set("pending", pending);
+  };
+
+  // ---- formatting & math ----
+  const usd = (x) => x == null ? "–" : "$" + x.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const cents = (x, d = 0) => x == null ? "–" : (x * 100).toFixed(d) + "¢";
+  const pct = (x) => x == null ? "–" : Math.round(x * 100) + "%";
+  const signedC = (x) => x == null ? "–" : (x >= 0 ? "+" : "−") + Math.abs(x * 100).toFixed(1) + "¢";
+  const signedUsd = (x) => (x >= 0 ? "+" : "−") + usd(Math.abs(x));
+  const et = (s) => new Date(s * 1000).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" });
+  const feeAt = (p) => p == null ? null : feeRate * p * (1 - p);
+  const netEdge = (fair, ask) => fair == null || ask == null ? null : fair - ask - feeAt(ask);
+  const secondsLeft = () => snap && snap.windowEnd ? Math.max(0, snap.windowEnd - (snap.now + (Date.now() - gotAt) / 1000)) : null;
+
+  function edges(s) {
+    const f = s && s.fairUp;
+    const ua = s && s.up && s.up.ask, da = s && s.down && s.down.ask;
+    return {
+      upFair: f, downFair: f == null ? null : 1 - f,
+      upAsk: ua, downAsk: da,
+      upNet: netEdge(f, ua), downNet: netEdge(f == null ? null : 1 - f, da),
+    };
+  }
+
+  // ---- LIVE tab ----
+  function side(prefix, fair, ask, net) {
+    $(prefix + "Ask").textContent = cents(ask);
+    $(prefix + "Fair").textContent = cents(fair);
+    $(prefix + "Fee").textContent = cents(feeAt(ask), 1);
+    const e = $(prefix + "Edge");
+    e.textContent = signedC(net);
+    e.className = "num " + (net == null ? "" : net >= 0 ? "pos" : "neg");
+    const go = net != null && net * 100 >= minEdge && !(snap && snap.stale);
+    const b = $(prefix + "Badge");
+    b.textContent = go ? "Worth a look" : net == null ? "–" : "No edge";
+    b.className = "badge" + (go ? " go" : "");
+    $(prefix + "card").classList.toggle("hot-" + prefix, go);
+  }
+
+  function renderLive() {
+    const left = secondsLeft();
+    if (left != null) $("clock").textContent = `${Math.floor(left / 60)}:${String(Math.floor(left % 60)).padStart(2, "0")}`;
+    if (!snap || !snap.windowStart) {
+      if (snap && snap.errors) $("warn").textContent = "Data issue: " + snap.errors.join("; ");
+      return;
+    }
+    $("win").textContent = `${et(snap.windowStart)}–${et(snap.windowEnd)} ET`;
+    const us = snap.source === "us";
+    $("src").textContent = us ? "Polymarket US" : "Global book";
+    $("src").className = "src" + (us ? "" : " fallback");
+    $("spotLabel").textContent = us ? "BTC index (BRTI)" : "BTC (Coinbase)";
+    $("spot").textContent = usd(snap.spot);
+    $("ptb").textContent = usd(snap.ptb);
+    $("ptbsrc").textContent = snap.ptbSource === "official" ? "official" : snap.ptbSource === "estimate" ? "≈ estimate" : "posting soon";
+    const gap = snap.spot != null && snap.ptb != null ? snap.spot - snap.ptb : null;
+    $("gap").textContent = gap == null ? "–" : (gap >= 0 ? "+" : "−") + usd(Math.abs(gap)) + (gap >= 0 ? " above" : " below");
+    $("gap").className = "num " + (gap == null ? "" : gap >= 0 ? "pos" : "neg");
+
+    const e = edges(snap);
+    $("fair").textContent = pct(e.upFair);
+    $("fairbar").style.width = e.upFair == null ? "50%" : (e.upFair * 100).toFixed(1) + "%";
+    const mid = snap.up && snap.up.bid != null && snap.up.ask != null ? (snap.up.bid + snap.up.ask) / 2 : null;
+    $("mkt").textContent = mid == null ? "–" : pct(mid);
+    $("vol").textContent = snap.sigmaSec && snap.spot ? `BTC typically moves ±${usd(snap.spot * snap.sigmaSec * Math.sqrt(60))} a minute right now` : "";
+    side("up", e.upFair, e.upAsk, e.upNet);
+    side("down", e.downFair, e.downAsk, e.downNet);
+
+    const w = [];
+    if (!us) w.push("Couldn't reach the Polymarket US market, so this is the global book and an estimated price to beat. Don't bet off these numbers.");
+    if (snap.stale) w.push("Showing data from a few seconds ago (the US API asked us to slow down).");
+    const spread = snap.up && snap.up.ask != null && snap.up.bid != null ? snap.up.ask - snap.up.bid : null;
+    if (spread != null && spread > 0.04) w.push(`Wide spread (${cents(spread)}): thin market, prices may move when you trade.`);
+    if (left != null && left < 30) w.push("Under 30s left: odds can jump before your order fills.");
+    if (snap.marketState && snap.marketState !== "MARKET_STATE_OPEN") w.push("Market isn't open for trading right now.");
+    const errs = (snap.errors || []).filter((x) => !/US market for this window not found|US data/.test(x) || !us);
+    if (errs.length) w.push("Data issue: " + errs.join("; "));
+    $("warn").textContent = w.join(" ");
+    $("pmLink").href = snap.marketUrl || "https://polymarket.us";
+    $("betCtx").textContent = `Logs against the ${et(snap.windowStart)}–${et(snap.windowEnd)} ET window.` +
+      (e.upFair != null ? ` Model right now: Up ${pct(e.upFair)}.` : "");
+  }
+
+  // ---- logging & results ----
+  function track(s) {
+    if (!s.slug) return;
+    if (!pending[s.slug] && !results[s.slug]) {
+      pending[s.slug] = { src: s.source, key: s.source === "us" ? s.slug : String(s.windowStart), end: s.windowEnd };
+    }
+  }
+  function record(s) {
+    if (!s.windowStart || s.stale || Date.now() - lastLog < LOG_EVERY_MS) return;
+    lastLog = Date.now();
+    const e = edges(s);
+    log.push({
+      type: "tick", ts: new Date().toISOString(), src: s.source, slug: s.slug, window: s.windowStart,
+      secLeft: Math.round(s.secondsLeft), spot: s.spot, ptb: s.ptb, fairUp: s.fairUp,
+      upBid: s.up && s.up.bid, upAsk: e.upAsk, downBid: s.down && s.down.bid, downAsk: e.downAsk,
+      fee: feeRate, upNet: e.upNet, downNet: e.downNet,
+    });
+    track(s);
+    save();
+  }
+  let checking = false;
+  async function checkResults() {
+    if (checking) return; checking = true;
+    try {
+      const now = Date.now() / 1000;
+      const due = Object.entries(pending).filter(([, p]) => p.end < now - 20).slice(0, 4);
+      for (const [slug, p] of due) {
+        if (now - p.end > 2 * 86400) { delete pending[slug]; continue; }
+        try {
+          const r = await fetch(`/api/snapshot?result=${encodeURIComponent(p.key)}&src=${p.src}`).then((x) => x.json());
+          if (r.outcome) {
+            results[slug] = r.outcome; delete pending[slug];
+            log.push({ type: "result", ts: new Date().toISOString(), src: p.src, slug, outcome: r.outcome });
+          }
+        } catch {}
+      }
+      save();
+    } finally { checking = false; }
+  }
+
+  // ---- RECORD tab ----
+  function renderRecord() {
+    const ticks = log.filter((r) => r.type === "tick" && results[r.slug] && r.src === "us" && r.fairUp != null);
+    const winsUp = (r) => results[r.slug] === "Up";
+
+    // Flag simulation: first qualifying tick per window per side, 1 share each.
+    const seen = new Set(); let n = 0, wins = 0, cost = 0, pnl = 0;
+    for (const r of ticks) {
+      for (const sideName of ["up", "down"]) {
+        const ask = r[sideName + "Ask"];
+        if (ask == null) continue;
+        const fair = sideName === "up" ? r.fairUp : 1 - r.fairUp;
+        const net = fair - ask - (r.fee ?? feeRate) * ask * (1 - ask);
+        const key = r.slug + sideName;
+        if (net * 100 < minEdge || seen.has(key)) continue;
+        seen.add(key);
+        const won = (sideName === "up") === winsUp(r);
+        const fee = (r.fee ?? feeRate) * ask * (1 - ask);
+        n++; wins += won ? 1 : 0; cost += ask + fee; pnl += (won ? 1 : 0) - ask - fee;
+      }
+    }
+    $("flagStats").innerHTML = `
+      <div><b>${n}</b><span>flagged bets</span></div>
+      <div><b>${n ? Math.round((wins / n) * 100) + "%" : "–"}</b><span>won</span></div>
+      <div><b class="${pnl >= 0 ? "pos" : "neg"}">${n ? (pnl >= 0 ? "+" : "") + ((pnl / cost) * 100).toFixed(1) + "%" : "–"}</b><span>return after fees</span></div>`;
+    $("flagNote").textContent = n < 300
+      ? `Only ${n} so far. Under a few hundred, this is mostly luck either way. Keep collecting before trusting it.`
+      : "Large enough to start meaning something. A positive return that holds up as this grows is the signal you're looking for.";
+
+    // Calibration buckets.
+    const bins = Array.from({ length: 10 }, () => ({ n: 0, f: 0, up: 0 }));
+    let bModel = 0, bMkt = 0, nB = 0;
+    for (const r of ticks) {
+      const b = bins[Math.min(9, Math.floor(r.fairUp * 10))];
+      const y = winsUp(r) ? 1 : 0;
+      b.n++; b.f += r.fairUp; b.up += y;
+      if (r.upBid != null && r.upAsk != null) {
+        const m = (r.upBid + r.upAsk) / 2;
+        bModel += (r.fairUp - y) ** 2; bMkt += (m - y) ** 2; nB++;
+      }
+    }
+    $("calib").innerHTML = "<tr><th>Model said</th><th>Readings</th><th>Avg said</th><th>Up won</th></tr>" +
+      bins.map((b, i) => b.n ? `<tr><td>${i * 10}–${i * 10 + 10}%</td><td>${b.n}</td><td>${Math.round((b.f / b.n) * 100)}%</td><td>${Math.round((b.up / b.n) * 100)}%</td></tr>` : "").join("");
+    $("brier").textContent = nB
+      ? `Accuracy score (lower is better): model ${(bModel / nB).toFixed(4)} vs market ${(bMkt / nB).toFixed(4)}. ` +
+        (bModel < bMkt ? "The model is beating the market's own odds so far." : "The market's odds are more accurate than the model so far.")
+      : "No finished windows yet. Results appear here as windows you watched settle.";
+    const nTicks = log.filter((r) => r.type === "tick").length;
+    $("logInfo").textContent = `${nTicks} readings across ${new Set(log.filter((r) => r.type === "tick").map((r) => r.slug)).size} windows, ${Object.keys(results).length} with results. Saved on this phone only.`;
+  }
+
+  // ---- BETS tab ----
+  function betResult(b) {
+    const out = results[b.slug];
+    const shares = b.amount / b.price;
+    const fee = (b.fee ?? feeRate) * shares * b.price * (1 - b.price);
+    if (!out) return { status: "pending", pnl: 0, fee };
+    const won = out === b.side;
+    return { status: won ? "won" : "lost", pnl: (won ? shares : 0) - b.amount - fee, fee };
+  }
+  function renderBets() {
+    let staked = 0, pnl = 0, done = 0, won = 0;
+    const split = { flagged: { n: 0, pnl: 0 }, other: { n: 0, pnl: 0 } };
+    for (const b of bets) {
+      const r = betResult(b);
+      if (r.status === "pending") continue;
+      done++; staked += b.amount; pnl += r.pnl; if (r.status === "won") won++;
+      const g = b.flagged ? split.flagged : split.other; g.n++; g.pnl += r.pnl;
+    }
+    $("betStats").innerHTML = `
+      <div><b>${done}</b><span>settled bets</span></div>
+      <div><b>${done ? Math.round((won / done) * 100) + "%" : "–"}</b><span>won</span></div>
+      <div><b class="${pnl >= 0 ? "pos" : "neg"}">${done ? signedUsd(pnl) : "–"}</b><span>profit / loss</span></div>`;
+    $("betSplit").textContent = done
+      ? `Bets the tool flagged: ${split.flagged.n} (${signedUsd(split.flagged.pnl)}). Bets it didn't: ${split.other.n} (${signedUsd(split.other.pnl)}). Staked ${usd(staked)} total. P&L includes estimated fees.`
+      : "Log the bets you actually place. Results fill in automatically when each window settles.";
+    $("betList").innerHTML = bets.length ? bets.slice().reverse().map((b) => {
+      const r = betResult(b);
+      const tag = r.status === "pending" ? '<span class="dim">pending</span>'
+        : `<span class="${r.pnl >= 0 ? "pos" : "neg"}">${signedUsd(r.pnl)}</span>`;
+      return `<div class="bet"><div><b class="${b.side === "Up" ? "pos" : "neg"}">${b.side}</b> ${usd(b.amount)} @ ${Math.round(b.price * 100)}¢
+        <div class="dim small">${et(b.window)} ET · model ${b.fair == null ? "–" : pct(b.side === "Up" ? b.fair : 1 - b.fair)}${b.flagged ? " · flagged" : ""}</div></div>
+        <div>${tag}<button class="x" data-del="${b.id}" aria-label="Delete">✕</button></div></div>`;
+    }).join("") : '<p class="dim small" style="margin:0">No bets logged yet.</p>';
+  }
+  $("betAdd").addEventListener("click", () => {
+    const price = Number($("betPrice").value) / 100, amount = Number($("betAmt").value);
+    if (!snap || !snap.windowStart) return alert("Wait for live data to load first.");
+    if (!(price > 0 && price < 1) || !(amount > 0)) return alert("Enter the price you paid (1–99¢) and the amount.");
+    const sideName = $("betSide").value, e = edges(snap);
+    const net = sideName === "Up" ? e.upNet : e.downNet;
+    bets.push({
+      id: Date.now(), side: sideName, price, amount, fee: feeRate,
+      slug: snap.slug, src: snap.source, window: snap.windowStart,
+      fair: snap.fairUp, flagged: net != null && net * 100 >= minEdge,
+    });
+    track(snap); save();
+    $("betPrice").value = ""; $("betAmt").value = "";
+    renderBets();
+  });
+  $("betList").addEventListener("click", (ev) => {
+    const id = ev.target.getAttribute("data-del");
+    if (id && confirm("Delete this bet?")) { bets = bets.filter((b) => String(b.id) !== id); save(); renderBets(); }
+  });
+
+  // ---- export / clear ----
+  $("dl").addEventListener("click", () => {
+    const cols = ["type", "ts", "src", "slug", "window", "secLeft", "spot", "ptb", "fairUp", "upBid", "upAsk", "downBid", "downAsk", "fee", "upNet", "downNet", "outcome"];
+    const csv = [cols.join(",")].concat(log.map((r) => cols.map((c) => r[c] ?? "").join(","))).join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    a.download = `btc-edge-log-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+  });
+  $("clr").addEventListener("click", () => {
+    if (confirm("Delete all saved readings on this phone? Your bets are kept.")) { log = []; save(); renderRecord(); }
+  });
+
+  // ---- tabs, polling ----
+  document.querySelectorAll("nav button").forEach((b) => b.addEventListener("click", () => {
+    tab = b.dataset.tab;
+    document.querySelectorAll("nav button").forEach((x) => x.classList.toggle("on", x === b));
+    document.querySelectorAll(".tab").forEach((x) => x.classList.toggle("on", x.id === "tab-" + tab));
+    renderAll();
+  }));
+  function renderAll() {
+    renderLive();
+    if (tab === "record") renderRecord();
+    if (tab === "bets") renderBets();
+  }
+
+  let lastResultCheck = 0;
+  async function poll() {
+    try {
+      const r = await fetch("/api/snapshot", { cache: "no-store" });
+      snap = await r.json(); gotAt = Date.now();
+      $("status").textContent = "live · " + new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit" });
+      if (snap.windowStart) record(snap);
+    } catch {
+      $("status").textContent = "offline, retrying…";
+    }
+    if (Date.now() - lastResultCheck > 30000) { lastResultCheck = Date.now(); checkResults().then(renderAll); }
+    renderAll();
+  }
+  function start() { if (!timer) { poll(); timer = setInterval(poll, POLL_MS); } }
+  function stop() { clearInterval(timer); timer = null; }
+  document.addEventListener("visibilitychange", () => (document.hidden ? stop() : start()));
+  setInterval(renderLive, 1000);
+  start();
+})();
+</script>
+</body>
+</html>
